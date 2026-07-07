@@ -1,4 +1,10 @@
-import { aggregateByDay, fetchMeals, isConfigured } from "@/lib/notion";
+import {
+  aggregateByDay,
+  fetchMeals,
+  getTodayDate,
+  isConfigured,
+  type NotionError,
+} from "@/lib/notion";
 import { CaloriesChart, MacrosChart } from "@/components/MacroCharts";
 
 // Always reflect the latest Notion data on load.
@@ -51,13 +57,36 @@ function SetupNotice() {
   );
 }
 
+function DataError({ error }: { error: NotionError }) {
+  return (
+    <main className="mx-auto max-w-2xl px-6 py-16">
+      <h1 className="text-2xl font-bold">🍽️ Macro Tracker</h1>
+      <div className="mt-6 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6">
+        <div className="text-xs font-semibold uppercase tracking-wide text-red-500">
+          Couldn’t load your data
+        </div>
+        <h2 className="mt-1 text-lg font-semibold">{error.title}</h2>
+        <p className="mt-2 text-sm text-[var(--muted)]">{error.detail}</p>
+        {error.hint && (
+          <p className="mt-3 rounded-lg bg-black/5 p-3 text-sm leading-relaxed dark:bg-white/5">
+            {error.hint}
+          </p>
+        )}
+      </div>
+    </main>
+  );
+}
+
 export default async function Home() {
   if (!isConfigured) return <SetupNotice />;
 
-  const meals = await fetchMeals();
+  const result = await fetchMeals();
+  if (!result.ok) return <DataError error={result.error} />;
+
+  const meals = result.meals;
   const daily = aggregateByDay(meals);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getTodayDate();
   const todayRow = daily.find((d) => d.date === today);
   const daysLogged = daily.length;
   const avgCalories = daysLogged
