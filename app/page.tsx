@@ -113,7 +113,7 @@ export default async function Home() {
       : null;
 
   return (
-    <main className="mx-auto max-w-5xl px-6 py-10">
+    <main className="w-full px-6 py-10 sm:px-8 lg:px-12">
       <header className="mb-8">
         <h1 className="text-2xl font-bold">🍽️ Macro Tracker</h1>
         <p className="mt-1 text-sm text-[var(--muted)]">
@@ -129,43 +129,51 @@ export default async function Home() {
       </div>
 
       <div className="grid gap-6">
-        {/* Weight — renders on its own, independent of whether meals exist. */}
-        {weightConfigured && weightRes && !weightRes.ok && (
-          <Panel title="Weight (lbs)">
-            <p className="text-sm text-[var(--muted)]">
-              {weightRes.error.title}. {weightRes.error.hint}
-            </p>
-          </Panel>
-        )}
+        {/* Weight and calories per day share the top row. */}
+        <div className="grid gap-6 lg:grid-cols-2">
+          {weightConfigured && weightRes && !weightRes.ok && (
+            <Panel title="Weight (lbs)">
+              <p className="text-sm text-[var(--muted)]">
+                {weightRes.error.title}. {weightRes.error.hint}
+              </p>
+            </Panel>
+          )}
 
-        {weightDaily.length > 0 && (
-          <Panel title="Weight (lbs)">
-            <div className="mb-3 flex items-baseline gap-3">
-              <span className="text-2xl font-semibold">
-                {latestWeight}
-                <span className="ml-1 text-sm font-normal text-[var(--muted)]">lbs</span>
-              </span>
-              {weightChange !== null && weightDaily.length > 1 && (
-                <span className="text-sm text-[var(--muted)]">
-                  {weightChange > 0 ? "+" : ""}
-                  {weightChange} lbs over {weightDaily.length} days
+          {weightDaily.length > 0 && (
+            <Panel title="Weight (lbs)">
+              <div className="mb-3 flex items-baseline gap-3">
+                <span className="text-2xl font-semibold">
+                  {latestWeight}
+                  <span className="ml-1 text-sm font-normal text-[var(--muted)]">lbs</span>
                 </span>
-              )}
-            </div>
-            <WeightChart data={weightDaily} />
-          </Panel>
-        )}
+                {weightChange !== null && weightDaily.length > 1 && (
+                  <span className="text-sm text-[var(--muted)]">
+                    {weightChange > 0 ? "+" : ""}
+                    {weightChange} lbs over {weightDaily.length} days
+                  </span>
+                )}
+              </div>
+              <WeightChart data={weightDaily} />
+            </Panel>
+          )}
 
-        {weightConfigured && weightRes?.ok && weightDaily.length === 0 && (
-          <Panel title="Weight (lbs)">
-            <p className="text-sm text-[var(--muted)]">
-              Log a weigh-in in your Weight Log (set the <strong>Date</strong> and{" "}
-              <strong>Weight (lbs)</strong>) and refresh.
-            </p>
-          </Panel>
-        )}
+          {weightConfigured && weightRes?.ok && weightDaily.length === 0 && (
+            <Panel title="Weight (lbs)">
+              <p className="text-sm text-[var(--muted)]">
+                Log a weigh-in in your Weight Log (set the <strong>Date</strong> and{" "}
+                <strong>Weight (lbs)</strong>) and refresh.
+              </p>
+            </Panel>
+          )}
 
-        {/* Meals */}
+          {daysLogged > 0 && (
+            <Panel title="Calories per day">
+              <CaloriesChart data={daily} />
+            </Panel>
+          )}
+        </div>
+
+        {/* Meals detail */}
         {daysLogged === 0 ? (
           <Panel title="No meals logged yet">
             <p className="text-sm text-[var(--muted)]">
@@ -174,9 +182,6 @@ export default async function Home() {
           </Panel>
         ) : (
           <>
-            <Panel title="Calories per day">
-              <CaloriesChart data={daily} />
-            </Panel>
             <Panel title="Macros per day (g)">
               <MacrosChart data={daily} />
             </Panel>

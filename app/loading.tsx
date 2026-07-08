@@ -9,7 +9,7 @@ function Box({ className = "" }: { className?: string }) {
 
 export default function Loading() {
   return (
-    <main className="mx-auto max-w-5xl px-6 py-10">
+    <main className="w-full px-6 py-10 sm:px-8 lg:px-12">
       <header className="mb-8">
         <Box className="h-7 w-56" />
         <Box className="mt-2 h-4 w-72" />
