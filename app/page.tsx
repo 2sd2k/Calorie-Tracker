@@ -1,11 +1,15 @@
 import {
   aggregateByDay,
+  aggregateWeightByDay,
   fetchMeals,
+  fetchWeights,
   getTodayDate,
   isConfigured,
+  weightConfigured,
   type NotionError,
 } from "@/lib/notion";
 import { CaloriesChart, MacrosChart } from "@/components/MacroCharts";
+import { WeightChart } from "@/components/WeightChart";
 
 // Always reflect the latest Notion data on load.
 export const dynamic = "force-dynamic";
@@ -98,6 +102,16 @@ export default async function Home() {
 
   const recent = [...meals].reverse().slice(0, 8);
 
+  // Weight is an optional, separate database — fetch it only if configured.
+  const weightRes = weightConfigured ? await fetchWeights() : null;
+  const weightDaily = weightRes?.ok ? aggregateWeightByDay(weightRes.entries) : [];
+  const latestWeight = weightDaily.at(-1)?.weight ?? null;
+  const firstWeight = weightDaily[0]?.weight ?? null;
+  const weightChange =
+    latestWeight !== null && firstWeight !== null
+      ? Math.round((latestWeight - firstWeight) * 10) / 10
+      : null;
+
   return (
     <main className="mx-auto max-w-5xl px-6 py-10">
       <header className="mb-8">
@@ -114,50 +128,89 @@ export default async function Home() {
         <StatCard label="Avg Protein" value={String(avgProtein)} unit="g" />
       </div>
 
-      {daysLogged === 0 ? (
-        <Panel title="No data yet">
-          <p className="text-sm text-[var(--muted)]">
-            Log a meal in your Notion database (set the <strong>Date</strong> and macro fields) and refresh.
-          </p>
-        </Panel>
-      ) : (
-        <div className="grid gap-6">
-          <Panel title="Calories per day">
-            <CaloriesChart data={daily} />
+      <div className="grid gap-6">
+        {/* Weight — renders on its own, independent of whether meals exist. */}
+        {weightConfigured && weightRes && !weightRes.ok && (
+          <Panel title="Weight (lbs)">
+            <p className="text-sm text-[var(--muted)]">
+              {weightRes.error.title}. {weightRes.error.hint}
+            </p>
           </Panel>
-          <Panel title="Macros per day (g)">
-            <MacrosChart data={daily} />
-          </Panel>
-          <Panel title="Recent meals">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="text-xs uppercase text-[var(--muted)]">
-                  <tr>
-                    <th className="py-2 pr-4">Date</th>
-                    <th className="py-2 pr-4">Meal</th>
-                    <th className="py-2 pr-4 text-right">Cal</th>
-                    <th className="py-2 pr-4 text-right">P</th>
-                    <th className="py-2 pr-4 text-right">C</th>
-                    <th className="py-2 text-right">F</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recent.map((m) => (
-                    <tr key={m.id} className="border-t border-[var(--border)]">
-                      <td className="py-2 pr-4 text-[var(--muted)]">{m.date ?? "—"}</td>
-                      <td className="py-2 pr-4">{m.name || "Untitled"}</td>
-                      <td className="py-2 pr-4 text-right">{m.calories}</td>
-                      <td className="py-2 pr-4 text-right">{m.protein}</td>
-                      <td className="py-2 pr-4 text-right">{m.carbs}</td>
-                      <td className="py-2 text-right">{m.fat}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        )}
+
+        {weightDaily.length > 0 && (
+          <Panel title="Weight (lbs)">
+            <div className="mb-3 flex items-baseline gap-3">
+              <span className="text-2xl font-semibold">
+                {latestWeight}
+                <span className="ml-1 text-sm font-normal text-[var(--muted)]">lbs</span>
+              </span>
+              {weightChange !== null && weightDaily.length > 1 && (
+                <span className="text-sm text-[var(--muted)]">
+                  {weightChange > 0 ? "+" : ""}
+                  {weightChange} lbs over {weightDaily.length} days
+                </span>
+              )}
             </div>
+            <WeightChart data={weightDaily} />
           </Panel>
-        </div>
-      )}
+        )}
+
+        {weightConfigured && weightRes?.ok && weightDaily.length === 0 && (
+          <Panel title="Weight (lbs)">
+            <p className="text-sm text-[var(--muted)]">
+              Log a weigh-in in your Weight Log (set the <strong>Date</strong> and{" "}
+              <strong>Weight (lbs)</strong>) and refresh.
+            </p>
+          </Panel>
+        )}
+
+        {/* Meals */}
+        {daysLogged === 0 ? (
+          <Panel title="No meals logged yet">
+            <p className="text-sm text-[var(--muted)]">
+              Log a meal in your Meals Log (set the <strong>Date</strong> and macro fields) and refresh.
+            </p>
+          </Panel>
+        ) : (
+          <>
+            <Panel title="Calories per day">
+              <CaloriesChart data={daily} />
+            </Panel>
+            <Panel title="Macros per day (g)">
+              <MacrosChart data={daily} />
+            </Panel>
+            <Panel title="Recent meals">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="text-xs uppercase text-[var(--muted)]">
+                    <tr>
+                      <th className="py-2 pr-4">Date</th>
+                      <th className="py-2 pr-4">Meal</th>
+                      <th className="py-2 pr-4 text-right">Cal</th>
+                      <th className="py-2 pr-4 text-right">P</th>
+                      <th className="py-2 pr-4 text-right">C</th>
+                      <th className="py-2 text-right">F</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recent.map((m) => (
+                      <tr key={m.id} className="border-t border-[var(--border)]">
+                        <td className="py-2 pr-4 text-[var(--muted)]">{m.date ?? "—"}</td>
+                        <td className="py-2 pr-4">{m.name || "Untitled"}</td>
+                        <td className="py-2 pr-4 text-right">{m.calories}</td>
+                        <td className="py-2 pr-4 text-right">{m.protein}</td>
+                        <td className="py-2 pr-4 text-right">{m.carbs}</td>
+                        <td className="py-2 text-right">{m.fat}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
+          </>
+        )}
+      </div>
     </main>
   );
 }

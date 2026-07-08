@@ -50,10 +50,29 @@ export type FetchMealsResult =
   | { ok: true; meals: Meal[] }
   | { ok: false; error: NotionError };
 
+/**
+ * One weigh-in, as logged in the Notion "Weight Log" database.
+ */
+export type WeightEntry = {
+  id: string;
+  date: string | null; // ISO date
+  weight: number; // pounds
+};
+
+/** One point on the weight graph — a day's average weigh-in, in pounds. */
+export type DailyWeight = { date: string; weight: number };
+
+export type FetchWeightsResult =
+  | { ok: true; entries: WeightEntry[] }
+  | { ok: false; error: NotionError };
+
 const token = process.env.NOTION_TOKEN;
 const dataSourceId = process.env.NOTION_DATA_SOURCE_ID;
+const weightDataSourceId = process.env.NOTION_WEIGHT_DATA_SOURCE_ID;
 
+/** Meals are the core dataset; weight tracking is optional. */
 export const isConfigured = Boolean(token && dataSourceId);
+export const weightConfigured = Boolean(token && weightDataSourceId);
 
 const notion = token ? new Client({ auth: token }) : null;
 
@@ -70,8 +89,8 @@ function plainText(rich: any[] | undefined): string {
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 /**
- * The columns the dashboard reads, with the Notion property type each must be.
- * Names are case-sensitive and must match the database exactly.
+ * The columns each Notion database must expose, with the property type each
+ * needs. Names are case-sensitive and must match the database exactly.
  */
 const REQUIRED_PROPS = [
   { name: "Meal", type: "title" },
@@ -82,6 +101,22 @@ const REQUIRED_PROPS = [
   { name: "Fat (g)", type: "number" },
 ] as const;
 
+const REQUIRED_WEIGHT_PROPS = [
+  { name: "Date", type: "date" },
+  { name: "Weight (lbs)", type: "number" },
+] as const;
+
+/**
+ * Describes which database we're reading, so error messages can name the right
+ * database and env var, and validation can check the right columns.
+ */
+type Source = {
+  label: string;
+  envVar: string;
+  required: readonly { name: string; type: string }[];
+  schemaHint: string;
+};
+
 /**
  * Compare a page's properties against what we expect. Returns a schema error
  * describing every mismatch, or null if the shape is good. This is what turns a
@@ -91,9 +126,10 @@ const REQUIRED_PROPS = [
  */
 function validateSchema(
   props: Record<string, { type?: string } | undefined>,
+  source: Source,
 ): NotionError | null {
   const problems: string[] = [];
-  for (const { name, type } of REQUIRED_PROPS) {
+  for (const { name, type } of source.required) {
     const prop = props[name];
     if (!prop) problems.push(`missing "${name}" (${type})`);
     else if (prop.type !== type)
@@ -102,9 +138,9 @@ function validateSchema(
   if (problems.length === 0) return null;
   return {
     kind: "schema",
-    title: "Your Notion columns don't line up",
+    title: `Your ${source.label} columns don't line up`,
     detail: `The dashboard couldn't read every column it needs: ${problems.join("; ")}.`,
-    hint: 'Rename the columns in your Meals Log to match exactly (case-sensitive), including the "(g)" suffix on Protein/Carbs/Fat.',
+    hint: source.schemaHint,
   };
 }
 
@@ -113,7 +149,7 @@ function validateSchema(
  * we don't specifically recognize, so the caller can rethrow it to the error
  * boundary rather than swallow a real bug.
  */
-function classifyError(err: unknown): NotionError | null {
+function classifyError(err: unknown, source: Source): NotionError | null {
   if (!isNotionClientError(err)) return null;
   switch (err.code) {
     case APIErrorCode.Unauthorized:
@@ -127,9 +163,8 @@ function classifyError(err: unknown): NotionError | null {
     case APIErrorCode.ObjectNotFound:
       return {
         kind: "access",
-        title: "Can't reach the Meals Log",
-        detail:
-          "Either the integration isn't connected to this database, or NOTION_DATA_SOURCE_ID points somewhere else.",
+        title: `Can't reach the ${source.label}`,
+        detail: `Either the integration isn't connected to this database, or ${source.envVar} points somewhere else.`,
         hint: "In Notion, open the database → ••• → Connections → add your integration, then double-check the data source ID.",
       };
     case APIErrorCode.ValidationError:
@@ -139,7 +174,7 @@ function classifyError(err: unknown): NotionError | null {
         kind: "schema",
         title: "Notion couldn't process the request",
         detail: err.message,
-        hint: 'This often means the "Date" column was renamed or NOTION_DATA_SOURCE_ID is malformed.',
+        hint: `This often means the "Date" column was renamed or ${source.envVar} is malformed.`,
       };
     case APIErrorCode.RateLimited:
       return {
@@ -164,25 +199,30 @@ function classifyError(err: unknown): NotionError | null {
 }
 
 /**
- * Fetch every meal from the Notion data source, following pagination.
- * Expected, actionable failures come back as `{ ok: false, error }`; anything
- * unrecognized is rethrown for the route's error boundary to catch.
+ * Query an entire data source (following pagination), validate its schema
+ * against `source.required`, and map each row with `map`. Expected, actionable
+ * failures come back as `{ ok: false, error }`; anything unrecognized is
+ * rethrown for the route's error boundary to catch.
  */
-export async function fetchMeals(): Promise<FetchMealsResult> {
-  if (!notion || !dataSourceId) {
+async function queryAll<T>(
+  dataSourceId: string,
+  source: Source,
+  map: (props: Record<string, any>, id: string) => T, // eslint-disable-line @typescript-eslint/no-explicit-any
+): Promise<{ ok: true; rows: T[] } | { ok: false; error: NotionError }> {
+  if (!notion) {
     return {
       ok: false,
       error: {
         kind: "config",
         title: "Not connected to Notion",
-        detail: "NOTION_TOKEN and NOTION_DATA_SOURCE_ID must both be set.",
-        hint: "Copy .env.example to .env.local and fill in both values, then restart.",
+        detail: "NOTION_TOKEN must be set.",
+        hint: "Copy .env.example to .env.local and fill it in, then restart.",
       },
     };
   }
 
   try {
-    const meals: Meal[] = [];
+    const rows: T[] = [];
     let cursor: string | undefined = undefined;
     let validated = false;
 
@@ -201,32 +241,86 @@ export async function fetchMeals(): Promise<FetchMealsResult> {
 
         // Validate the schema once, against the first real row we see.
         if (!validated) {
-          const schemaError = validateSchema(p);
+          const schemaError = validateSchema(p, source);
           if (schemaError) return { ok: false, error: schemaError };
           validated = true;
         }
 
-        meals.push({
-          id: page.id,
-          name: plainText(p["Meal"]?.title),
-          date: p["Date"]?.date?.start ?? null,
-          calories: num(p["Calories"]),
-          protein: num(p["Protein (g)"]),
-          carbs: num(p["Carbs (g)"]),
-          fat: num(p["Fat (g)"]),
-          notes: plainText(p["Notes"]?.rich_text),
-        });
+        rows.push(map(p, page.id));
       }
 
       cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
     } while (cursor);
 
-    return { ok: true, meals };
+    return { ok: true, rows };
   } catch (err) {
-    const classified = classifyError(err);
+    const classified = classifyError(err, source);
     if (classified) return { ok: false, error: classified };
     throw err; // unrecognized — let the error boundary handle it
   }
+}
+
+const MEALS_SOURCE: Source = {
+  label: "Meals Log",
+  envVar: "NOTION_DATA_SOURCE_ID",
+  required: REQUIRED_PROPS,
+  schemaHint:
+    'Rename the columns in your Meals Log to match exactly (case-sensitive), including the "(g)" suffix on Protein/Carbs/Fat.',
+};
+
+const WEIGHT_SOURCE: Source = {
+  label: "Weight Log",
+  envVar: "NOTION_WEIGHT_DATA_SOURCE_ID",
+  required: REQUIRED_WEIGHT_PROPS,
+  schemaHint:
+    'Rename the columns in your Weight Log to match exactly (case-sensitive): "Date" (date) and "Weight (lbs)" (number).',
+};
+
+/** Fetch every meal from the Meals Log data source. */
+export async function fetchMeals(): Promise<FetchMealsResult> {
+  if (!dataSourceId) {
+    return {
+      ok: false,
+      error: {
+        kind: "config",
+        title: "Not connected to Notion",
+        detail: "NOTION_TOKEN and NOTION_DATA_SOURCE_ID must both be set.",
+        hint: "Copy .env.example to .env.local and fill in both values, then restart.",
+      },
+    };
+  }
+  const res = await queryAll(dataSourceId, MEALS_SOURCE, (p, id) => ({
+    id,
+    name: plainText(p["Meal"]?.title),
+    date: p["Date"]?.date?.start ?? null,
+    calories: num(p["Calories"]),
+    protein: num(p["Protein (g)"]),
+    carbs: num(p["Carbs (g)"]),
+    fat: num(p["Fat (g)"]),
+    notes: plainText(p["Notes"]?.rich_text),
+  }));
+  return res.ok ? { ok: true, meals: res.rows } : res;
+}
+
+/** Fetch every weigh-in from the (optional) Weight Log data source. */
+export async function fetchWeights(): Promise<FetchWeightsResult> {
+  if (!weightDataSourceId) {
+    return {
+      ok: false,
+      error: {
+        kind: "config",
+        title: "Weight tracking isn't set up",
+        detail: "NOTION_WEIGHT_DATA_SOURCE_ID isn't set.",
+        hint: "Run `node scripts/setup-weight-db.mjs` to create the Weight Log, then restart.",
+      },
+    };
+  }
+  const res = await queryAll(weightDataSourceId, WEIGHT_SOURCE, (p, id) => ({
+    id,
+    date: p["Date"]?.date?.start ?? null,
+    weight: num(p["Weight (lbs)"]),
+  }));
+  return res.ok ? { ok: true, entries: res.rows } : res;
 }
 
 /**
@@ -251,6 +345,30 @@ export function aggregateByDay(meals: Meal[]): DailyTotals[] {
   }
 
   return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/**
+ * Roll weigh-ins up to one point per day (averaging any same-day readings),
+ * rounded to a tenth of a pound — the data behind the weight graph.
+ */
+export function aggregateWeightByDay(entries: WeightEntry[]): DailyWeight[] {
+  const byDate = new Map<string, { sum: number; count: number }>();
+
+  for (const e of entries) {
+    if (!e.date || !e.weight) continue; // skip rows with no date or no weight
+    const day = e.date.slice(0, 10);
+    const cur = byDate.get(day) ?? { sum: 0, count: 0 };
+    cur.sum += e.weight;
+    cur.count += 1;
+    byDate.set(day, cur);
+  }
+
+  return [...byDate.entries()]
+    .map(([date, { sum, count }]) => ({
+      date,
+      weight: Math.round((sum / count) * 10) / 10,
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 /**
